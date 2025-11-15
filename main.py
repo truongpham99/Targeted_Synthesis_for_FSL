@@ -103,6 +103,8 @@ def gcmi_loss(images_timesteps, latents, clip_transform, vae_examplars, clip_exa
 
 def submod_optimize_seed(batch, init_seed, prompt, sd_model, clip_model, clip_transform, clip_examplars, vae_examplars,
                   submod_loss="gcmi", n_iters=30, guidance_scale=7.5, lr=0.05):
+    os.makedirs(f"./results/submod_{submod_loss}/{prompt}", exist_ok=True)
+
     img_seed = torch.nn.Parameter(init_seed.reshape((batch, 4, 64, 64)), requires_grad=True)
 
     optimizer = torch.optim.AdamW([img_seed], lr=lr)
@@ -118,19 +120,16 @@ def submod_optimize_seed(batch, init_seed, prompt, sd_model, clip_model, clip_tr
                                                     clip_transform=clip_transform,
                                                     clip_img_centroid=clip_centroid)
         if submod_loss == "gcmi":
-            loss = gcmi_loss(images_timesteps, latents, clip_transform, vae_examplars, clip_examplars)
+            loss = gcmi_loss(images_timesteps, latents, clip_transform, vae_examplars, clip_examplars, alpha=5)
         loss.backward()
         optimizer.step()
-        print("-"*30)
 
-    os.makedirs("./results", exist_ok=True)
-    os.makedirs(f"./results/submod_{submod_loss}/", exist_ok=True)
-    os.makedirs(f"./results/submod_{submod_loss}/{prompt}", exist_ok=True)
-
-    image_numpy = image.detach().cpu().permute(0, 2, 3, 1).float().numpy()
-    image_pils = sd_model.numpy_to_pil(image_numpy)
-    for i in range(len(image_pil)):
-        image_pils[i].save(f"./results/submod_{submod_loss}/{prompt}/image_{i}.JPEG")
+        image_numpy = image.detach().cpu().permute(0, 2, 3, 1).float().numpy()
+        image_pils = sd_model.numpy_to_pil(image_numpy)
+        for j in range(len(image_pils)):
+            # image_pils[i].save(f"./results/submod_{submod_loss}/{prompt}/image_{i}.JPEG")
+            os.makedirs(f"./results/submod_{submod_loss}/{prompt}/iter_test/", exist_ok=True)
+            image_pils[j].save(f"./results/submod_{submod_loss}/{prompt}/iter_test/image_{i}.JPEG")
 
 
 def optimize_seed(init_seed, prompt, sd_model, clip_model, clip_transform, clip_centroid, vae_centroid, count,
@@ -161,8 +160,6 @@ def optimize_seed(init_seed, prompt, sd_model, clip_model, clip_transform, clip_
         #     plt.axis("off")
         #     plt.tight_layout()
         #     plt.show()
-    os.makedirs("./results", exist_ok=True)
-    os.makedirs("./results/ss/", exist_ok=True)
     os.makedirs(f"./results/ss/{prompt}", exist_ok=True)
 
     image_numpy = image.detach().cpu().permute(0, 2, 3, 1).float().numpy()
@@ -185,7 +182,8 @@ if __name__ == "__main__":
 
 
     # Clip centroid from images
-    clip_examplars = clip_encode(clip_model, clip_transform, img_folder).mean(dim=0)
+    clip_examplars = clip_encode(clip_model, clip_transform, img_folder)
+    clip_centroid = clip_examplars.mean(dim=0)
     clip_centroid = clip_examplars / clip_examplars.norm(dim=-1, keepdim=True)
 
     # Create latent centroid from images
@@ -194,7 +192,8 @@ if __name__ == "__main__":
 
     height = sd_model.unet.config.sample_size * sd_model.vae_scale_factor
     width = sd_model.unet.config.sample_size * sd_model.vae_scale_factor
-    shape = (1, sd_model.unet.in_channels, height // sd_model.vae_scale_factor, width // sd_model.vae_scale_factor)
+    batch = 10
+    shape = (batch, sd_model.unet.in_channels, height // sd_model.vae_scale_factor, width // sd_model.vae_scale_factor)
 
     seed_everything(22)
     if sys.argv[1] == "StableDiffusion":
@@ -202,7 +201,7 @@ if __name__ == "__main__":
         with torch.no_grad():
             init_seed = torch.randn(shape, device=sd_model.device, dtype=clip_centroid.dtype).to(
                 CUDA) * sd_model.scheduler.init_noise_sigma
-            _, _, image, _ = sd_model.apply(prompt=prompt,
+            _, _, image, _ = sd_model.apply(prompt=[prompt]*batch,
                                              guidance_scale=7.5,
                                              img_seed=init_seed,
                                              run_raw_sd=True)
@@ -210,15 +209,20 @@ if __name__ == "__main__":
             # plt.axis("off")
             # plt.tight_layout()
             # plt.show()
+            os.makedirs(f"./results/stable/{prompt}", exist_ok=True)
+
             image_numpy = image.detach().cpu().permute(0, 2, 3, 1).float().numpy()
             image_pil = sd_model.numpy_to_pil(image_numpy)
-            image_pil[0].save(f"./results/sd/{prompt}/image.JPEG")
+            for j in range(len(image_pil)):
+                image_pil[j].save(f"./results/stable/{prompt}/image_{j}.JPEG")
 
     elif sys.argv[1] == "SeedSelect":
         # run SeedSelect
+        shape = (1, sd_model.unet.in_channels, height // sd_model.vae_scale_factor, width // sd_model.vae_scale_factor)
+
         init_seed = torch.randn(shape, device=sd_model.device, dtype=clip_centroid.dtype).to(
                 CUDA) * sd_model.scheduler.init_noise_sigma
-        for i in range(2):
+        for i in range(10):
             ### hyper-parameters
             n_optimization_iters = 30
             lr = 0.1
@@ -233,7 +237,7 @@ if __name__ == "__main__":
                         n_iters=n_optimization_iters, guidance_scale=7.5, lr=lr)
         
     elif sys.argv[1] == "GCMI":
-        batch = 2
+        batch = 1
         shape = (batch, sd_model.unet.in_channels, height // sd_model.vae_scale_factor, width // sd_model.vae_scale_factor)
         print(shape)
         init_seed = torch.randn(shape, device=sd_model.device, dtype=clip_centroid.dtype).to(
@@ -247,7 +251,7 @@ if __name__ == "__main__":
 
         init_seed = submod_optimize_seed(batch, init_seed, prompt, sd_model, 
                     clip_model, clip_transform.transforms, 
-                    clip_centroid, vae_centroid,
+                    clip_examplars, vae_examplars,
                     n_iters=n_optimization_iters, guidance_scale=7.5, lr=lr)
         
     # elif sys.argv[1] == "NAO_SeedSelect":
